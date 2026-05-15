@@ -33,7 +33,15 @@ def run_command(cmd: list[str], cwd: Path | None = None, check: bool = True) -> 
     return result
 
 
-def ssh_query_open_changes(src_user: str, src_ip: str, src_port: int, src_prj: str, limit: int) -> list[dict[str, Any]]:
+def ssh_query_open_changes(
+    src_user: str,
+    src_ip: str,
+    src_port: int,
+    src_prj: str,
+    limit: int,
+    owner: str | None = None,
+    since: str | None = None,
+) -> list[dict[str, Any]]:
     query = [
         "ssh",
         "-p",
@@ -47,6 +55,10 @@ def ssh_query_open_changes(src_user: str, src_ip: str, src_port: int, src_prj: s
         "status:open",
         f"limit:{limit}",
     ]
+    if owner:
+        query.append(f"owner:{owner}")
+    if since:
+        query.append(f"after:{since}")
     result = run_command(query)
 
     changes: list[dict[str, Any]] = []
@@ -107,6 +119,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dst-port", type=int, default=29418, help="destination Gerrit SSH port")
 
     parser.add_argument("--limit", type=int, default=10, help="max number of open changes to migrate")
+    parser.add_argument("--owner", help="optional owner filter, e.g. owner username or email")
+    parser.add_argument(
+        "--since",
+        help="optional since filter for Gerrit query (passed as after:<value>, e.g. 2026-01-01 or 7d)",
+    )
     parser.add_argument("--verbose", action="store_true", help="enable debug logging")
     return parser.parse_args()
 
@@ -126,7 +143,15 @@ def main() -> int:
     dst_url = f"ssh://{args.dst_user}@{args.dst_ip}:{args.dst_port}/{args.dst_prj}"
 
     logging.info("querying open changes from %s", args.src_prj)
-    changes = ssh_query_open_changes(args.src_user, args.src_ip, args.src_port, args.src_prj, args.limit)
+    changes = ssh_query_open_changes(
+        args.src_user,
+        args.src_ip,
+        args.src_port,
+        args.src_prj,
+        args.limit,
+        owner=args.owner,
+        since=args.since,
+    )
 
     if not changes:
         logging.info("no open changes found")
