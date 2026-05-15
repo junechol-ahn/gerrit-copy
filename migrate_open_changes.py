@@ -41,6 +41,7 @@ def ssh_query_open_changes(
     limit: int,
     owner: str | None = None,
     since: str | None = None,
+    until: str | None = None,
 ) -> list[dict[str, Any]]:
     query = [
         "ssh",
@@ -59,6 +60,8 @@ def ssh_query_open_changes(
         query.append(f"owner:{owner}")
     if since:
         query.append(f"after:{since}")
+    if until:
+        query.append(f"before:{until}")
     result = run_command(query)
 
     changes: list[dict[str, Any]] = []
@@ -124,6 +127,10 @@ def parse_args() -> argparse.Namespace:
         "--since",
         help="optional since filter for Gerrit query (passed as after:<value>, e.g. 2026-01-01 or 7d)",
     )
+    parser.add_argument(
+        "--until",
+        help="optional until filter for Gerrit query (passed as before:<value>, e.g. 2026-12-31 or 1d)",
+    )
     parser.add_argument("--verbose", action="store_true", help="enable debug logging")
     return parser.parse_args()
 
@@ -151,6 +158,7 @@ def main() -> int:
         args.limit,
         owner=args.owner,
         since=args.since,
+        until=args.until,
     )
 
     if not changes:
