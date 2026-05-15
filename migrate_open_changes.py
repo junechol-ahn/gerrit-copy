@@ -11,6 +11,24 @@ from pathlib import Path
 from typing import Any
 
 
+def parse_project_pairs_file(path: Path) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for line_no, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) != 2:
+            raise ValueError(
+                f"invalid format at {path}:{line_no}: expected '<src_project> <dst_project>'"
+            )
+        pairs.append((parts[0], parts[1]))
+
+    if not pairs:
+        raise ValueError(f"no project pairs found in {path}")
+    return pairs
+
+
 def run_command(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     logging.debug("exec: %s", " ".join(cmd))
     result = subprocess.run(
@@ -111,12 +129,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Migrate open Gerrit changes from source project to destination project"
     )
-    parser.add_argument("--src-prj", required=True, help="source Gerrit project")
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument("--src-prj", help="source Gerrit project")
+    source_group.add_argument(
+        "--project-pairs-file",
+        help="path to text file containing '<src_project> <dst_project>' pairs per line",
+    )
     parser.add_argument("--src-ip", required=True, help="source Gerrit IP or hostname")
     parser.add_argument("--src-user", required=True, help="source Gerrit SSH user")
     parser.add_argument("--src-port", type=int, default=29418, help="source Gerrit SSH port")
 
-    parser.add_argument("--dst-prj", required=True, help="destination Gerrit project")
+    parser.add_argument("--dst-prj", help="destination Gerrit project")
     parser.add_argument("--dst-ip", required=True, help="destination Gerrit IP or hostname")
     parser.add_argument("--dst-user", required=True, help="destination Gerrit SSH user")
     parser.add_argument("--dst-port", type=int, default=29418, help="destination Gerrit SSH port")
@@ -146,36 +169,52 @@ def main() -> int:
         logging.error("--limit must be > 0")
         return 2
 
-    src_url = f"ssh://{args.src_user}@{args.src_ip}:{args.src_port}/{args.src_prj}"
-    dst_url = f"ssh://{args.dst_user}@{args.dst_ip}:{args.dst_port}/{args.dst_prj}"
+    if args.project_pairs_file:
+        if args.dst_prj:
+            logging.error("--dst-prj cannot be used with --project-pairs-file")
+            return 2
+        try:
+            project_pairs = parse_project_pairs_file(Path(args.project_pairs_file))
+        except (OSError, ValueError) as exc:
+            logging.error(str(exc))
+            return 2
+    else:
+        if not args.dst_prj:
+            logging.error("--dst-prj is required when --src-prj is used")
+            return 2
+        project_pairs = [(args.src_prj, args.dst_prj)]
 
-    logging.info("querying open changes from %s", args.src_prj)
-    changes = ssh_query_open_changes(
-        args.src_user,
-        args.src_ip,
-        args.src_port,
-        args.src_prj,
-        args.limit,
-        owner=args.owner,
-        since=args.since,
-        until=args.until,
-    )
+    for src_prj, dst_prj in project_pairs:
+        src_url = f"ssh://{args.src_user}@{args.src_ip}:{args.src_port}/{src_prj}"
+        dst_url = f"ssh://{args.dst_user}@{args.dst_ip}:{args.dst_port}/{dst_prj}"
 
-    if not changes:
-        logging.info("no open changes found")
-        return 0
+        logging.info("querying open changes from %s", src_prj)
+        changes = ssh_query_open_changes(
+            args.src_user,
+            args.src_ip,
+            args.src_port,
+            src_prj,
+            args.limit,
+            owner=args.owner,
+            since=args.since,
+            until=args.until,
+        )
 
-    logging.info("found %d open changes", len(changes))
+        if not changes:
+            logging.info("no open changes found for %s", src_prj)
+            continue
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="gerrit-migrate-"))
-    repo_dir = temp_dir / "repo"
+        logging.info("found %d open changes for %s", len(changes), src_prj)
 
-    try:
-        run_command(["git", "clone", "--no-checkout", src_url, str(repo_dir)])
-        for change in changes:
-            migrate_change(repo_dir, src_url, dst_url, change, args.dst_prj)
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix="gerrit-migrate-"))
+        repo_dir = temp_dir / "repo"
+
+        try:
+            run_command(["git", "clone", "--no-checkout", src_url, str(repo_dir)])
+            for change in changes:
+                migrate_change(repo_dir, src_url, dst_url, change, dst_prj)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     logging.info("migration complete")
     return 0
